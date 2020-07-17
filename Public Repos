@@ -1,0 +1,197 @@
+# all for build 37
+# note that chrXY snps are usually present on both chrX and chrY in databases, but we have used them only on chrX because the positions on GSA manifest map to X (positions are different for Y)
+
+# Infinium ####
+#URL
+#https://sapac.support.illumina.com/array/array_kits/infinium-global-screening-array/downloads.html?langsel=/in/
+# All manifest csv files and their rsid files(only provided for b37, dbsnp version 150 and 151) were downloaded
+# Note that a1 = build 37, a2 = build 38
+
+# merge all infiniums b37 to get union of snps
+
+cut -f2,4,10,11 -d, */*1/*1.csv | egrep ",\\[" > manifests.csv
+sed -i -e 's/,/\t/g' manifests.csv
+cat */*/*rsid* | egrep -o "rs[0-9]+" > rsid
+
+cut -f2,3,6 */*1/*annotated.txt | grep "[A-Z]" | grep -v "MapInfo" | sort -u > geneannotation.txt
+
+# dbSNP153 ####
+#URL
+#ftp://ftp.ncbi.nih.gov/snp/latest_release/VCF
+
+#Download dbSNP
+# wget ftp://ftp.ncbi.nih.gov/snp/latest_release/VCF/GCF_000001405.25.gz # build 37
+# wget https://raw.githubusercontent.com/Shicheng-Guo/AnnotationDatabase/master/GCF_000001405.25_GRCh37.p13_assembly_report.txt # for chromosome numbers # decision : only keep NC because patches can mix positions and other databases also use NC as the most stable version
+
+#Find line number to remove headers
+zcat GCF_000001405.25.gz | grep -m1 -n CHROM #38
+zcat GCF_000001405.25.gz | head -38 > headers_dbsnp153.vcf
+
+grep "NC" GCF_000001405.25_GRCh37.p13_assembly_report.txt | cut -f1,7 > CHR # actual chromosome numbers mapped to the sequence given in db
+
+gunzip GCF_000001405.25.gz
+cut -f1-5,8 GCF_000001405.25 | grep "^NC" > GCF_000001405.25.NC
+rm GCF_000001405.25
+cut -f1-3 GCF_000001405.25.NC > GCF_000001405.25.NC123
+
+grep -Fwf ../Infinium/rsid GCF_000001405.25.NC123 > gsasubset_dbsnp153.vcf
+
+# use this in R to get manifest positions without an rsid - create one file per NC chromosome with positions to supply rest
+# since not all gsa-ids had rsids, get remaining by matching by position
+for chr in NC*; do grep -w $chr GCF_000001405.25.NC123 | grep -Fwf $chr > got$chr; done
+rm NC*
+cat gotNC* | cut -f3 > remaining
+grep -Fwf remaining GCF_000001405.25.NC >> gsasubset_dbsnp153.vcf
+rm remaining
+
+# get final_coordinates from R after matching alleles between dbsnp and infinium
+
+rm GCF_000001405.25.NC
+
+# 1kG ####
+#URL
+#http://www.cog-genomics.org/plink/2.0/resources#1kg_phase3
+
+#Download pvar
+wget https://www.dropbox.com/s/0nz9ey756xfocjm/all_phase3.pvar.zst?dl=1
+
+#Decompress zst
+plink2 --zst-decompress all_phase3.pvar.zst?dl=1 > all_phase3.pvar
+head -189 all_phase3.pvar > headers_all_phase3.pvar
+grep "SAS_AF=" all_phase3.pvar | cut -f1-5,8 > sas_phase3.var
+
+rm all*
+egrep -no "SAS_AF=.+;" sas_phase3.var | cut -f1 -d";" | sed 's/:/\t/g' | sed 's/SAS_AF=//g' > sas_af
+cut -f1-5 sas_phase3.var | grep -n . | sed 's/:/\t/g' > sas_main
+join sas_main sas_af | cut -f2-7 -d' ' | grep "rs" | egrep "[0-9]$" > sas_only
+# last column is SAS_AF
+
+cut -f3 ../dbSNP153/gsasubset_dbsnp153.vcf | grep -Fwf - sas_only > gsasubset_sasafphase3.var
+# should not add snps without rsids because this is old file, positions may have updated, ids are more reliable
+
+# Clinvar ###
+#URL
+#https://www.ncbi.nlm.nih.gov/clinvar/docs/ftp_primer/
+
+#Download clinvar
+#wget ftp://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh37/clinvar_20191202.vcf.gz
+#wget ftp://ftp.ncbi.nlm.nih.gov/pub/clinvar/README_VCF.txt
+
+gunzip clinvar_20191202.vcf.gz
+grep "^#" clinvar_20191202.vcf > headers_clinvar.vcf
+grep -v "^#" clinvar_20191202.vcf | cut -f1,2,4,5,8 > temp
+mv temp clinvar_20191202.vcf
+
+for chr in {{1..22},X,Y,MT,XY}
+do
+grep -w $chr clinvar_20191202.vcf | grep -Fwf ../dbSNP153/POS.37_byCHR.37/$chr >> gsasubset_clinvar.vcf
+grep -w $chr clinvar_20191202.vcf | grep -Fwf <(sed 's/rs/RS=/g' ../dbSNP153/dbID_byCHR.37/$chr) >> gsasubset_clinvar.vcf
+done
+
+sort -u gsasubset_clinvar.vcf > temp
+mv temp gsasubset_clinvar.vcf
+
+
+# ENSEMBL ####
+#URL
+#ftp://ftp.ensembl.org/pub/grch37/release-98/variation/vcf/homo_sapiens/
+
+#Download
+#wget ftp://ftp.ensembl.org/pub/grch37/release-98/variation/vcf/homo_sapiens/README
+#wget ftp://ftp.ensembl.org/pub/grch37/release-98/variation/vcf/homo_sapiens/homo_sapiens_somatic_incl_consequences.vcf.gz
+#wget ftp://ftp.ensembl.org/pub/grch37/release-98/variation/vcf/homo_sapiens/homo_sapiens_structural_variations.vcf.gz
+#wget ftp://ftp.ensembl.org/pub/grch37/release-98/variation/vcf/homo_sapiens/1000GENOMES-phase_3.vcf.gz
+ftp://ftp.ensembl.org:21/pub/grch37/release-98/variation/vcf/homo_sapiens/homo_sapiens_phenotype_associated.vcf.gz
+
+for gz in *gz
+do
+zcat $gz | grep "^#" > headers_${gz}
+zcat $gz | grep -v "^#" | cut -f1-5,8 > main_${gz}
+rm $gz
+done
+rename ".gz" "" *gz
+rename "main_" "" main*
+
+rename "_homo_sapiens_" "_" *
+
+for chr in {{1..22},X,Y,MT}
+do
+wget ftp://ftp.ensembl.org/pub/grch37/release-98/variation/vcf/homo_sapiens/homo_sapiens_incl_consequences-chr${chr}.vcf.gz
+gunzip homo_sapiens_incl_consequences-chr${chr}.vcf.gz
+grep -v "^#" homo_sapiens_incl_consequences-chr${chr}.vcf | cut -f1-5,8 > conseq_${chr}
+rm homo_sapiens_incl_consequences-chr${chr}.vcf
+grep -Fwf ../dbSNP153/POS.37_byCHR.37/$chr conseq_${chr} >> gsa_${chr}_germline.vcf
+grep -Fwf ../dbSNP153/dbID_byCHR.37/$chr conseq_${chr} >> gsa_${chr}_germline.vcf
+rm conseq_${chr}
+sort -u gsa_${chr}_germline.vcf > temp${chr}
+mv temp${chr} gsa_${chr}_germline.vcf
+grep -w $chr homo_sapiens_somatic_incl_consequences.vcf | grep -Fwf ../dbSNP153/POS.37_byCHR.37/$chr >> gsa_${chr}_somatic.vcf
+grep -w $chr homo_sapiens_somatic_incl_consequences.vcf | grep -Fwf ../dbSNP153/dbID_byCHR.37/$chr >> gsa_${chr}_somatic.vcf
+sort -u gsa_${chr}_somatic.vcf > temp${chr}
+mv temp${chr} gsa_${chr}_somatic.vcf
+grep -w $chr 1000GENOMES-phase_3.vcf | grep -Fwf ../dbSNP153/POS.37_byCHR.37/$chr >> gsa_${chr}_1KGphase3.vcf
+grep -w $chr 1000GENOMES-phase_3.vcf | grep -Fwf ../dbSNP153/dbID_byCHR.37/$chr >> gsa_${chr}_1KGphase3.vcf
+sort -u gsa_${chr}_1KGphase3.vcf > temp${chr}
+mv temp${chr} gsa_${chr}_1KGphase3.vcf
+grep -w $chr homo_sapiens_phenotype_associated.vcf | grep -Fwf ../dbSNP153/POS.37_byCHR.37/$chr >> gsa_${chr}_phenotype.vcf
+grep -w $chr homo_sapiens_phenotype_associated.vcf | grep -Fwf ../dbSNP153/dbID_byCHR.37/$chr >> gsa_${chr}_phenotype.vcf
+sort -u gsa_${chr}_phenotype.vcf > temp${chr}
+mv temp${chr} gsa_${chr}_phenotype.vcf
+done
+
+cat gsa_*_germline.vcf gsa_*_somatic.vcf > gsasubset_ensembl.vcf
+cat gsa_*_1KGphase3.vcf > gsasubset_1KGphase3.vcf
+cat gsa_*_phenotype.vcf > gsasubset_phenotype.vcf
+
+rm gsa_*
+
+wget ftp://ftp.ensembl.org/pub/grch37/release-98/variation/vcf/homo_sapiens/homo_sapiens_incl_consequences-chrMT.vcf.gz
+zcat homo_sapiens_incl_consequences-chrMT.vcf.gz | grep "^#" > headers_germline_incl_consequences.vcf
+rm homo_sapiens_incl_consequences-chrMT.vcf.gz
+
+egrep -no "SAS_AF=.+;" gsasubset_1KGphase3.vcf | cut -f1 -d";" | sed 's/:/\t/g' | sed 's/SAS_AF=//g' > sas_af
+cut -f1-5 gsasubset_1KGphase3.vcf | grep -n . | sed 's/:/\t/g' > sas_main
+join sas_main sas_af | egrep "[0-9]$" | cut -f2-7 -d' ' > sas_only
+# last column is SAS_AF
+
+egrep -no "ENST[0-9]+" gsasubset_ensembl.vcf | sed 's/:/\t/g' | sort -k1n | uniq > ensembl_enst
+cut -f1-2 gsasubset_ensembl.vcf | grep -n . | sed 's/:/\t/g' | sort -k1n | uniq > ensembl_main
+join ensembl_main ensembl_enst | cut -f2-4 -d' ' > ensembl_transcript
+
+cut -f1-2 gsasubset_phenotype.vcf > pheno_associated
+
+wget ftp://ftp.ensembl.org/pub/grch37/release-98/gtf/homo_sapiens/Homo_sapiens.GRCh37.87.gtf.gz
+
+egrep -no "ENST[0-9]+" Homo_sapiens.GRCh37.87.gtf | sed 's/:/\t/g' | sort -k1n | uniq > gtf_enst
+egrep -no "ENSG[0-9]+" Homo_sapiens.GRCh37.87.gtf | sed 's/:/\t/g' | sort -k1n | uniq > gtf_ensg
+join gtf_enst gtf_ensg | cut -f2-3 -d' ' > gtf
+join -1 3 -2 1 <(sort -k3 ensembl_transcript) <(sort -k1 gtf) | sort -u > ensembl_gtf
+
+# PON-P2
+wget http://structure.bmc.lu.se/PON-P2/ponp_predicion_combined_2.txt
+
+# GENE
+ftp://ftp.ncbi.nih.gov/gene/DATA/GENE_INFO/Mammalia/Homo_sapiens.gene_info.gz
+ftp://ftp.ebi.ac.uk/pub/databases/genenames/new/tsv/hgnc_complete_set.txt
+
+# dbNSFP
+wget ftp://dbnsfp:dbnsfp@dbnsfp.softgenetics.com/dbNSFP4.0a.zip
+
+awk '{print $1,";"$4,";"$5,$2}' dbNSFP4.0_gene.complete | sed 's/ ;\./|/g' | sed 's/ ;/|/g' | sed 's/;/|/g' | sed 's/||/|/g' | sed 's/| / /g' | sed 's/ /\t/g' | sed '1d' > ../dbNSFP_genealiases
+cut -f8,9,13 *variant.chr* | uniq | sed 's/^M/MT/g' | grep -v "genename" > dbNSFP4.0_snpgene
+
+# GWAS
+wget ftp://ftp.ebi.ac.uk/pub/databases/gwas/releases/latest/gwas-catalog-associations_ontology-annotated.tsv
+
+# get genes from all sources
+cat map_genes* | sort -u | datamash -s -g 1 collapse 2 | sed 's/,/;/g' > map_ALLgenesBYsnps.tsv
+cat <(echo -e "GENE\tdbID") <(cat map_genes* | sort -u | datamash -s -g 2 collapse 1 | sed 's/,/;/g' | sed 's/^ //g' | sed '1d' | grep -wv dbID) > map_ALLgenesBYgenes.tsv
+
+# SNPediaR
+for res in rs*; do echo -e $res "\t" $(sed 's/|/\n/g' $res | grep -i ^gene | grep -v ID | cut -f2 -d'=' | sort -u | xargs | sed 's/ /;/g') >> pageRS; done
+
+# dbscSNV
+wget ftp://dbnsfp:dbnsfp@dbnsfp.softgenetics.com/dbscSNV1.1.zip
+
+# dbMTS
+wget -r ftp://dbnsfp:dbnsfp@dbnsfp.softgenetics.com/dbMTS1.0/
